@@ -442,20 +442,32 @@ function Install-Archipelago($Release) {
     # The installer's deletelib task would remove installed worlds, so deselect it.
     $arguments = '/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCLOSEAPPLICATIONS /MERGETASKS=!deletelib /DIR="' + $ArchipelagoDir + '"'
     Say ('Installing the compatible Archipelago bundle ' + $Release.tag_name + ' (Windows may request elevation)...')
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $installer
+    $startInfo.Arguments = $arguments
+    $startInfo.UseShellExecute = $true
+    $startInfo.Verb = 'runas'
     try {
-        $process = Start-Process -FilePath $installer -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+        $process = [Diagnostics.Process]::Start($startInfo)
+        if (-not $process) { throw 'Archipelago installer did not start.' }
     } catch {
+        Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
         $cause = $_.Exception
         while ($cause) {
             if ($cause -is [ComponentModel.Win32Exception] -and $cause.NativeErrorCode -eq 1223) {
-                Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
                 throw [OperationCanceledException]::new('Windows elevation was declined; the Archipelago installation did not start.')
             }
             $cause = $cause.InnerException
         }
         throw
     }
-    if ($process.ExitCode -ne 0) { throw ('Archipelago installer exited with code ' + $process.ExitCode) }
+    try {
+        $process.WaitForExit()
+        $installerExitCode = $process.ExitCode
+    } finally {
+        $process.Dispose()
+    }
+    if ($installerExitCode -ne 0) { throw ('Archipelago installer exited with code ' + $installerExitCode) }
     if (-not (Test-Path -LiteralPath $serverExe -PathType Leaf) -or
         -not (Test-Path -LiteralPath $generatorExe -PathType Leaf)) {
         throw ('Archipelago Server or Generator is missing from ' + $ArchipelagoDir)
