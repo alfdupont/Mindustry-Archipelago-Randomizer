@@ -26,6 +26,8 @@ To generate a World(APworld), you will need to install the Mindustry World into 
 
 ## Setup guide <a name="setup" />
 
+Optional automated launchers for Linux and Windows are in [tools/launcher](tools/launcher/README.md). They run the released client in a separate local installation and can manage a local room.
+
 ### Windows
 1. Go to the [latest release](https://github.com/JohnMahglass/Mindustry-Archipelago-Randomizer/releases).
 2. Download the "Win_Mindustry_*.zip" file. (Replace the * symbol with the version)
