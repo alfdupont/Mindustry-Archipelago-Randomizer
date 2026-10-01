@@ -442,7 +442,19 @@ function Install-Archipelago($Release) {
     # The installer's deletelib task would remove installed worlds, so deselect it.
     $arguments = '/SP- /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /NOCLOSEAPPLICATIONS /MERGETASKS=!deletelib /DIR="' + $ArchipelagoDir + '"'
     Say ('Installing the compatible Archipelago bundle ' + $Release.tag_name + ' (Windows may request elevation)...')
-    $process = Start-Process -FilePath $installer -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+    try {
+        $process = Start-Process -FilePath $installer -ArgumentList $arguments -Verb RunAs -Wait -PassThru
+    } catch {
+        $cause = $_.Exception
+        while ($cause) {
+            if ($cause -is [ComponentModel.Win32Exception] -and $cause.NativeErrorCode -eq 1223) {
+                Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction SilentlyContinue
+                throw [OperationCanceledException]::new('Windows elevation was declined; the Archipelago installation did not start.')
+            }
+            $cause = $cause.InnerException
+        }
+        throw
+    }
     if ($process.ExitCode -ne 0) { throw ('Archipelago installer exited with code ' + $process.ExitCode) }
     if (-not (Test-Path -LiteralPath $serverExe -PathType Leaf) -or
         -not (Test-Path -LiteralPath $generatorExe -PathType Leaf)) {
@@ -573,7 +585,42 @@ function Start-RoomServer([string]$RoomPath, [int]$Port) {
     if (-not $PublicHost) { $arguments += ' --host 127.0.0.1' }
     $stdout = Join-Path $stateDir 'server.log'
     $stderr = Join-Path $stateDir 'server-error.log'
-    Start-Process -FilePath $serverExe -ArgumentList $arguments -WorkingDirectory $ArchipelagoDir -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden | Out-Null
+    $stdin = Join-Path $stateDir 'server-input.txt'
+    [IO.File]::WriteAllText($stdin, '')
+    $runner = Join-Path $stateDir 'server-runner.ps1'
+    $runnerConfig = Join-Path $stateDir 'server-runner.json'
+    $runnerSource = @'
+param([Parameter(Mandatory = $true)][string]$ConfigPath)
+$ErrorActionPreference = 'Stop'
+$errorLog = Join-Path (Split-Path -Parent $ConfigPath) 'server-error.log'
+try {
+    $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+    $process = Start-Process -FilePath $config.ServerExe -ArgumentList $config.Arguments `
+        -WorkingDirectory $config.WorkingDirectory -RedirectStandardInput $config.Stdin `
+        -RedirectStandardOutput $config.Stdout -RedirectStandardError $config.Stderr `
+        -WindowStyle Hidden -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        Add-Content -LiteralPath $errorLog -Value ('Archipelago server exited with code ' + $process.ExitCode)
+    }
+} catch {
+    Add-Content -LiteralPath $errorLog -Value ('Archipelago server runner failed: ' + $_.Exception.Message)
+    exit 1
+}
+'@
+    [IO.File]::WriteAllText($runner, $runnerSource, [Text.UTF8Encoding]::new($false))
+    @{
+        ServerExe = $serverExe
+        Arguments = $arguments
+        WorkingDirectory = $ArchipelagoDir
+        Stdin = $stdin
+        Stdout = $stdout
+        Stderr = $stderr
+    } | ConvertTo-Json -Compress | Set-Content -LiteralPath $runnerConfig -Encoding UTF8
+    # A separate process owns the long-lived server's log handles, so captured
+    # launcher output can close as soon as this command finishes.
+    $powershellExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $runnerArguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $runner + '" -ConfigPath "' + $runnerConfig + '"'
+    Start-Process -FilePath $powershellExe -ArgumentList $runnerArguments -WindowStyle Hidden | Out-Null
     for ($attempt = 0; $attempt -lt 30; $attempt++) {
         Start-Sleep -Milliseconds 500
         $running = Find-ProcessIn $ArchipelagoDir '^ArchipelagoServer\.exe$'
@@ -686,6 +733,7 @@ try {
     }
 
     $worldReady = $NoHost
+    $bundleUpdateError = ''
     if (-not $NoHost) {
         $installedComponents = (Test-Path -LiteralPath $serverExe -PathType Leaf) -and
             (Test-Path -LiteralPath $generatorExe -PathType Leaf) -and
@@ -708,14 +756,16 @@ try {
                     Install-Archipelago $worldRelease
                     $installedComponents = $true
                 } catch {
-                    if (-not $installedComponents) { throw }
-                    Warn ('Archipelago update failed; keeping the installed version: ' + $_.Exception.Message)
+                    if ($_.Exception -is [OperationCanceledException] -or $ForceUpdate -or -not $installedComponents) { throw }
+                    $bundleUpdateError = $_.Exception.Message
+                    Warn ('Archipelago update failed; keeping the installed version: ' + $bundleUpdateError)
                 }
             }
         }
         $worldReady = $installedComponents -and
             (-not $requiredWorldTag -or $script:launcherState.ApworldTag -eq $requiredWorldTag)
         if (-not $worldReady -and -not $client.Path) {
+            if ($bundleUpdateError) { throw ('Archipelago setup failed: ' + $bundleUpdateError) }
             throw 'The installed Archipelago version could not be verified against the client release.'
         }
         if ($NewRoom) {
