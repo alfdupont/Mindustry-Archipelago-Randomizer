@@ -706,6 +706,7 @@ try {
     if (-not $requiredWorldTag -and $client.Tag -eq 'v0.5.1') { $requiredWorldTag = 'v0.5.0' }
     $worldRelease = $null
     $worldHashMismatch = $false
+    $worldHashMigration = $false
     if (-not $NoHost -and $requiredWorldTag -and
         $script:launcherState.ApworldTag -eq $requiredWorldTag -and
         (Test-Path -LiteralPath $worldPath -PathType Leaf)) {
@@ -717,7 +718,7 @@ try {
                 $worldAsset = Get-Asset $worldRelease '^mindustry\.apworld$'
                 $expectedWorldHash = Get-AssetHash $worldAsset
                 $script:launcherState.ApworldHash = $expectedWorldHash
-                if (-not $Status) { Save-State }
+                $worldHashMigration = $true
             } catch { Warn ('Could not verify the installed Mindustry APWorld: ' + $_.Exception.Message) }
         }
         if ($expectedWorldHash) {
@@ -785,6 +786,7 @@ try {
             (Test-Path -LiteralPath $worldPath -PathType Leaf)
         $needsBundle = (-not $installedComponents) -or $ForceUpdate -or $worldHashMismatch -or
             ($requiredWorldTag -and $script:launcherState.ApworldTag -ne $requiredWorldTag)
+        if ($worldHashMigration -and -not $needsBundle) { Save-State }
         if ($needsBundle) {
             if ($serverProcess -or $gameProcess) {
                 Warn 'Archipelago update postponed while Mindustry or its server is running.'
