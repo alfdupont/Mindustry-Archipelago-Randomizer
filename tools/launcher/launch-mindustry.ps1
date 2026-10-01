@@ -43,11 +43,11 @@ function Say([string]$Message) { Write-Host $Message }
 function Warn([string]$Message) { Write-Warning $Message }
 
 function Read-State {
-    $result = @{ ClientTag = ''; ClientExe = ''; ClientHash = ''; ApworldTag = ''; SoftwareGlTag = ''; SoftwareGlRootHash = ''; SoftwareGlJreHash = '' }
+    $result = @{ ClientTag = ''; ClientExe = ''; ClientHash = ''; ApworldTag = ''; ApworldHash = ''; SoftwareGlTag = ''; SoftwareGlRootHash = ''; SoftwareGlJreHash = '' }
     if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) { return $result }
     try {
         $saved = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-        foreach ($key in @('ClientTag', 'ClientExe', 'ClientHash', 'ApworldTag', 'SoftwareGlTag', 'SoftwareGlRootHash', 'SoftwareGlJreHash')) {
+        foreach ($key in @('ClientTag', 'ClientExe', 'ClientHash', 'ApworldTag', 'ApworldHash', 'SoftwareGlTag', 'SoftwareGlRootHash', 'SoftwareGlJreHash')) {
             if ($saved.PSObject.Properties.Name -contains $key) { $result[$key] = [string]$saved.$key }
         }
     } catch { Warn 'The launcher state is unreadable; installed files will be checked directly.' }
@@ -174,11 +174,15 @@ function Test-NewerTag([string]$Available, [string]$Installed) {
     catch { return $false }
 }
 
-function Download-Asset($Asset, [string]$Repository, [string]$Prefix) {
+function Get-AssetHash($Asset) {
     if (-not $Asset -or $Asset.digest -notmatch '^sha256:([0-9a-fA-F]{64})$') {
-        throw 'The release asset has no SHA-256 digest; refusing an unverified download.'
+        throw 'The release asset has no SHA-256 digest.'
     }
-    $expected = $Matches[1]
+    return $Matches[1].ToUpperInvariant()
+}
+
+function Download-Asset($Asset, [string]$Repository, [string]$Prefix) {
+    $expected = Get-AssetHash $Asset
     $allowed = 'https://github.com/' + $Repository + '/releases/download/'
     if (-not $Asset.browser_download_url.StartsWith($allowed, [StringComparison]::OrdinalIgnoreCase)) {
         throw ('Unexpected download URL: ' + $Asset.browser_download_url)
@@ -433,6 +437,7 @@ function Install-Archipelago($Release) {
     if (-not $asset) { throw ('No Windows Archipelago installer was found in ' + $Release.tag_name) }
     $installer = Download-Asset $asset $worldRepo $Release.tag_name
     $worldAsset = Get-Asset $Release '^mindustry\.apworld$'
+    $worldHash = Get-AssetHash $worldAsset
     $downloadedWorld = Download-Asset $worldAsset $worldRepo $Release.tag_name
     $backup = Join-Path $backupDir ('archipelago-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $backup -Force | Out-Null
@@ -475,7 +480,11 @@ function Install-Archipelago($Release) {
     $worldDir = Split-Path -Parent $worldPath
     New-Item -ItemType Directory -Path $worldDir -Force | Out-Null
     Copy-Item -LiteralPath $downloadedWorld -Destination $worldPath -Force
+    if ((Get-FileHash -LiteralPath $worldPath -Algorithm SHA256).Hash -ine $worldHash) {
+        throw 'The installed Mindustry APWorld does not match the release SHA-256 digest.'
+    }
     $script:launcherState.ApworldTag = [string]$Release.tag_name
+    $script:launcherState.ApworldHash = $worldHash
     Save-State
     Say ('Archipelago and the Mindustry APWorld are ready in ' + $ArchipelagoDir)
 }
@@ -611,7 +620,8 @@ try {
         -WorkingDirectory $config.WorkingDirectory -RedirectStandardInput $config.Stdin `
         -RedirectStandardOutput $config.Stdout -RedirectStandardError $config.Stderr `
         -WindowStyle Hidden -Wait -PassThru
-    if ($process.ExitCode -ne 0) {
+    # Windows reports a normal console Ctrl+C shutdown as STATUS_CONTROL_C_EXIT.
+    if ($process.ExitCode -ne 0 -and $process.ExitCode -ne -1073741510) {
         Add-Content -LiteralPath $errorLog -Value ('Archipelago server exited with code ' + $process.ExitCode)
     }
 } catch {
@@ -694,6 +704,29 @@ try {
         $requiredWorldTag = $script:launcherState.ApworldTag
     }
     if (-not $requiredWorldTag -and $client.Tag -eq 'v0.5.1') { $requiredWorldTag = 'v0.5.0' }
+    $worldRelease = $null
+    $worldHashMismatch = $false
+    if (-not $NoHost -and $requiredWorldTag -and
+        $script:launcherState.ApworldTag -eq $requiredWorldTag -and
+        (Test-Path -LiteralPath $worldPath -PathType Leaf)) {
+        $expectedWorldHash = $script:launcherState.ApworldHash
+        if ($expectedWorldHash -notmatch '^[0-9a-fA-F]{64}$') { $expectedWorldHash = '' }
+        if (-not $expectedWorldHash -and -not $NoUpdate) {
+            try {
+                $worldRelease = Get-Release $worldRepo $requiredWorldTag
+                $worldAsset = Get-Asset $worldRelease '^mindustry\.apworld$'
+                $expectedWorldHash = Get-AssetHash $worldAsset
+                $script:launcherState.ApworldHash = $expectedWorldHash
+                if (-not $Status) { Save-State }
+            } catch { Warn ('Could not verify the installed Mindustry APWorld: ' + $_.Exception.Message) }
+        }
+        if ($expectedWorldHash) {
+            $worldHashMismatch = (Get-FileHash -LiteralPath $worldPath -Algorithm SHA256).Hash -ine $expectedWorldHash
+            if ($worldHashMismatch) { Say 'Mindustry APWorld differs from the verified release; repair required.' }
+        } elseif ($NoUpdate) {
+            Warn 'The installed Mindustry APWorld has no recorded digest; run without -NoUpdate to verify it.'
+        }
+    }
 
     $roomPath = $null
     if ($Room) {
@@ -721,7 +754,7 @@ try {
             Say ('Client update available: ' + $client.Tag + ' -> ' + $latestClient.tag_name)
         }
         if (-not $NoHost -and $requiredWorldTag -and
-            $script:launcherState.ApworldTag -ne $requiredWorldTag) {
+            ($script:launcherState.ApworldTag -ne $requiredWorldTag -or $worldHashMismatch)) {
             Say ('Archipelago bundle to check/install: ' + $requiredWorldTag)
         }
         if ($script:launcherState.SoftwareGlTag) {
@@ -750,32 +783,36 @@ try {
         $installedComponents = (Test-Path -LiteralPath $serverExe -PathType Leaf) -and
             (Test-Path -LiteralPath $generatorExe -PathType Leaf) -and
             (Test-Path -LiteralPath $worldPath -PathType Leaf)
-        $needsBundle = (-not $installedComponents) -or $ForceUpdate -or
+        $needsBundle = (-not $installedComponents) -or $ForceUpdate -or $worldHashMismatch -or
             ($requiredWorldTag -and $script:launcherState.ApworldTag -ne $requiredWorldTag)
         if ($needsBundle) {
             if ($serverProcess -or $gameProcess) {
                 Warn 'Archipelago update postponed while Mindustry or its server is running.'
                 if (-not $installedComponents) { throw 'Archipelago is incomplete and cannot host this room.' }
+                if ($worldHashMismatch) { throw 'Stop Mindustry and its server, then rerun to repair the Mindustry APWorld.' }
             } elseif ($NoUpdate) {
                 if (-not $installedComponents) { throw 'Archipelago is missing; run again without -NoUpdate.' }
+                if ($worldHashMismatch) { throw 'The Mindustry APWorld differs from the verified release; run again without -NoUpdate to repair it.' }
                 Warn 'Archipelago version could not be checked while -NoUpdate is set.'
             } else {
                 if (-not $requiredWorldTag) {
                     throw 'The client release does not identify a compatible APWorld; automatic local setup was stopped.'
                 }
                 try {
-                    $worldRelease = Get-Release $worldRepo $requiredWorldTag
+                    if (-not $worldRelease) { $worldRelease = Get-Release $worldRepo $requiredWorldTag }
                     Install-Archipelago $worldRelease
                     $installedComponents = $true
+                    $worldHashMismatch = $false
                 } catch {
-                    if ($_.Exception -is [OperationCanceledException] -or $ForceUpdate -or -not $installedComponents) { throw }
+                    if ($_.Exception -is [OperationCanceledException] -or $ForceUpdate -or $worldHashMismatch -or -not $installedComponents) { throw }
                     $bundleUpdateError = $_.Exception.Message
                     Warn ('Archipelago update failed; keeping the installed version: ' + $bundleUpdateError)
                 }
             }
         }
         $worldReady = $installedComponents -and
-            (-not $requiredWorldTag -or $script:launcherState.ApworldTag -eq $requiredWorldTag)
+            (-not $requiredWorldTag -or $script:launcherState.ApworldTag -eq $requiredWorldTag) -and
+            -not $worldHashMismatch
         if (-not $worldReady -and -not $client.Path) {
             if ($bundleUpdateError) { throw ('Archipelago setup failed: ' + $bundleUpdateError) }
             throw 'The installed Archipelago version could not be verified against the client release.'

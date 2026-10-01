@@ -40,6 +40,7 @@ You can also use **Settings → Archipelago** with host `localhost`, port `38281
 - Archipelago is installed in `C:\ProgramData\Archipelago` by default. The matching Mindustry APWorld, server, generator, and options template come from the [Mindustry Archipelago release](https://github.com/JohnMahglass/Archipelago-Mindustry/releases). Windows may request administrator approval for this installer. Use `-ArchipelagoDir` if you already use another installation folder.
 - On first run, if `Players` has no player YAML files, the script copies the Mindustry template as `Players\Mindustry.yaml` and sets its slot name to `Mindustry`. It then generates a room under `output` and starts a local server. Existing player YAML files and rooms are reused. If several rooms exist, choose one with `-Room`.
 - The launcher checks the [Windows client releases](https://github.com/JohnMahglass/Mindustry-Archipelago-Randomizer/releases) for updates. It waits until the game and server have stopped before replacing files they use. The client update is held until the matching APWorld is available.
+- The installed Mindustry APWorld is checked against the release SHA-256 digest on later runs. This also detects an interrupted Archipelago installer that restored an older bundled APWorld. Existing launcher state without a saved digest is verified on the next online run; `-NoUpdate` can check it after that digest has been saved.
 - Download cache, update state, logs, and backups are in `windows\launcher-state`. A failed update leaves an existing client available for the next launch.
 - After `-SoftwareGL` is used, the launcher keeps Mesa's OpenGL DLLs inside that game folder and backs up any DLLs it replaces. It also checks that those files remain intact before launching.
 
@@ -83,6 +84,7 @@ If you use `-PublicHost`, also allow the Archipelago server through Windows Fire
 - **Campaign shows a connection error:** connect to the Archipelago room in Mindustry before opening Campaign. Check that the slot name matches your player YAML.
 - **More than one room exists:** run with `-Room 'path\to\AP_....zip'`. The script will not guess which room to host.
 - **An update is postponed:** close the game and the local Archipelago server, then run the script again. The server process is `ArchipelagoServer.exe` in Task Manager.
+- **The Mindustry APWorld needs repair:** close the game and local server, then rerun without `-NoUpdate`. The launcher will reinstall the matching bundle and verify the APWorld file.
 - **Generation or server startup fails:** read `windows\launcher-state\generator.log`, `generator-error.log`, `server.log`, and `server-error.log`.
 - **The first download fails:** check network access to GitHub and rerun. `-NoUpdate` works after the required files have been installed.
 - **Mindustry says OpenGL is unsupported in a VM:** run with `-SoftwareGL` as shown above. The first run needs network access and Windows' built-in `tar.exe` to unpack Mesa's `.7z` archive. This is a CPU renderer, so lower the game resolution if performance is poor.
