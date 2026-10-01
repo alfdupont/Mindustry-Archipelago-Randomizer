@@ -432,6 +432,8 @@ function Install-Archipelago($Release) {
     $asset = Get-Asset $Release '^Setup[._ ]Archipelago[._ ].*\.exe$'
     if (-not $asset) { throw ('No Windows Archipelago installer was found in ' + $Release.tag_name) }
     $installer = Download-Asset $asset $worldRepo $Release.tag_name
+    $worldAsset = Get-Asset $Release '^mindustry\.apworld$'
+    $downloadedWorld = Download-Asset $worldAsset $worldRepo $Release.tag_name
     $backup = Join-Path $backupDir ('archipelago-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $backup -Force | Out-Null
     foreach ($file in @((Join-Path $ArchipelagoDir 'host.yaml'), $worldPath)) {
@@ -446,13 +448,9 @@ function Install-Archipelago($Release) {
         -not (Test-Path -LiteralPath $generatorExe -PathType Leaf)) {
         throw ('Archipelago Server or Generator is missing from ' + $ArchipelagoDir)
     }
-    if (-not (Test-Path -LiteralPath $worldPath -PathType Leaf)) {
-        $worldAsset = Get-Asset $Release '^mindustry\.apworld$'
-        $downloadedWorld = Download-Asset $worldAsset $worldRepo $Release.tag_name
-        $worldDir = Split-Path -Parent $worldPath
-        New-Item -ItemType Directory -Path $worldDir -Force | Out-Null
-        Copy-Item -LiteralPath $downloadedWorld -Destination $worldPath -Force
-    }
+    $worldDir = Split-Path -Parent $worldPath
+    New-Item -ItemType Directory -Path $worldDir -Force | Out-Null
+    Copy-Item -LiteralPath $downloadedWorld -Destination $worldPath -Force
     $script:launcherState.ApworldTag = [string]$Release.tag_name
     Save-State
     Say ('Archipelago and the Mindustry APWorld are ready in ' + $ArchipelagoDir)
